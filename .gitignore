@@ -10,3 +10,4 @@ build/
 .DS_Store
 *.log
 gcp-key*.json
+env-vars.yaml

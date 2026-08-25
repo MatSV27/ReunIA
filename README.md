@@ -57,22 +57,34 @@ functions-framework --target=followup_run --debug
 
 ### 4. Deploy
 
+Uses an `--env-vars-file` (YAML) rather than passing `.env` directly, since `.env`'s comments/blank lines aren't valid `KEY=VALUE,KEY=VALUE` syntax. Generate one from `.env` (excluding comments/blank lines):
+
 ```
+grep -v '^#' .env | grep -v '^$' | sed 's/^/"/;s/=/": "/;s/$/"/' > /tmp/env-vars.yaml
+# or just hand-write extraction-agent/env-vars.yaml / followup-agent/env-vars.yaml (gitignored) with:
+#   TELEGRAM_BOT_TOKEN: "..."
+#   TELEGRAM_WEBHOOK_SECRET: "..."
+#   GCP_PROJECT_ID: "meeting-followup-agent-mtsv"
+#   GEMINI_MODEL: "gemini-3.5-flash"
+#   VERTEX_AI_LOCATION: "global"
+
 gcloud functions deploy extraction-webhook \
   --gen2 --runtime=python312 --region=us-central1 \
   --source=extraction-agent --entry-point=extraction_webhook \
   --trigger-http --allow-unauthenticated \
-  --set-env-vars="$(cat .env | tr '\n' ',')"
+  --env-vars-file=extraction-agent/env-vars.yaml
 
 gcloud functions deploy followup-run \
   --gen2 --runtime=python312 --region=us-central1 \
   --source=followup-agent --entry-point=followup_run \
   --trigger-http --no-allow-unauthenticated \
-  --set-env-vars="$(cat .env | tr '\n' ',')"
+  --env-vars-file=followup-agent/env-vars.yaml
 ```
 
-Then register the Telegram webhook (pointing at the deployed `extraction-webhook` URL) and a Cloud Scheduler job (pointing at `followup-run`, daily).
+Then register the Telegram webhook (pointing at the deployed `extraction-webhook` URL, with `X-Telegram-Bot-Api-Secret-Token` set to `TELEGRAM_WEBHOOK_SECRET`) and a Cloud Scheduler job (pointing at `followup-run`, daily, with an OIDC token since it's not publicly invokable).
 
 ## Status
 
-Day 1 of 6 — GCP project, Firestore, and Cloud Function scaffolds are in place. Extraction/Follow-up agent logic (Gemini prompts) still to be wired up.
+Day 2 of 6 — Extraction Agent is fully wired up (voice/text → Gemini 3.5 Flash on Vertex AI → structured tasks → Firestore → Telegram confirmation) and deployed to Cloud Functions, verified end-to-end with real Telegram messages. Follow-up Agent is still a stub.
+
+Note on Vertex AI model location: `gemini-3.5-flash` (and other recent Gemini models) are only served from the `global` Vertex AI location in this project, not regional ones like `us-central1` — see `VERTEX_AI_LOCATION` in `.env.example`. Infra (Cloud Functions, Firestore) stays in `us-central1`; only the model calls use `global`.
