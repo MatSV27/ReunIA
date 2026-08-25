@@ -1,0 +1,5 @@
+functions-framework==3.*
+google-adk==2.7.1
+google-cloud-firestore==2.*
+requests==2.*
+python-dotenv==1.*
