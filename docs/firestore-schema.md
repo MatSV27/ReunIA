@@ -32,7 +32,7 @@ Audit trail of every autonomous action the Follow-up Agent takes on a task — t
 
 ## Escalation rule
 
-`reminder_count >= 2` and still `pending` → next Follow-up Agent run escalates instead of reminding again: the task's `status` becomes `"escalated"` and the digest's tone shifts to urgent for that item. This is the autonomy signal for judging (Innovation & Operational Utility, 40%).
+`reminder_count >= 2` on a still-`pending` task is a *signal to investigate*, not an automatic rule. The agent has a tool, `get_task_events(task_id)`, that reads this exact subcollection to see the real timestamps behind that count — two tasks reminded twice each look identical by count alone, but one spread over three weeks is genuinely stuck (escalate) while one reminded twice in the last two days is still fresh (just remind again). Verified in production: two tasks with `reminder_count == 2` got different treatment based on this. When the agent does escalate, the task's `status` becomes `"escalated"` and the digest's tone shifts to urgent for that item. This is the autonomy signal for judging (Innovation & Operational Utility, 40%).
 
 ## Note: one digest per chat, not one message per task
 
