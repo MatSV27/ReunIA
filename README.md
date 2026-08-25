@@ -57,34 +57,74 @@ functions-framework --target=followup_run --debug
 
 ### 4. Deploy
 
-Uses an `--env-vars-file` (YAML) rather than passing `.env` directly, since `.env`'s comments/blank lines aren't valid `KEY=VALUE,KEY=VALUE` syntax. Generate one from `.env` (excluding comments/blank lines):
+Uses an `--env-vars-file` (YAML) rather than passing `.env` directly, since `.env`'s comments/blank lines aren't valid `KEY=VALUE,KEY=VALUE` syntax. Hand-write `extraction-agent/env-vars.yaml` and `followup-agent/env-vars.yaml` (gitignored, never commit these):
+
+```yaml
+TELEGRAM_BOT_TOKEN: "..."
+TELEGRAM_WEBHOOK_SECRET: "..."   # extraction-agent only
+GCP_PROJECT_ID: "meeting-followup-agent-mtsv"
+GEMINI_MODEL: "gemini-3.5-flash"
+VERTEX_AI_LOCATION: "global"
+```
 
 ```
-grep -v '^#' .env | grep -v '^$' | sed 's/^/"/;s/=/": "/;s/$/"/' > /tmp/env-vars.yaml
-# or just hand-write extraction-agent/env-vars.yaml / followup-agent/env-vars.yaml (gitignored) with:
-#   TELEGRAM_BOT_TOKEN: "..."
-#   TELEGRAM_WEBHOOK_SECRET: "..."
-#   GCP_PROJECT_ID: "meeting-followup-agent-mtsv"
-#   GEMINI_MODEL: "gemini-3.5-flash"
-#   VERTEX_AI_LOCATION: "global"
-
 gcloud functions deploy extraction-webhook \
   --gen2 --runtime=python312 --region=us-central1 \
   --source=extraction-agent --entry-point=extraction_webhook \
   --trigger-http --allow-unauthenticated \
-  --env-vars-file=extraction-agent/env-vars.yaml
+  --env-vars-file=extraction-agent/env-vars.yaml \
+  --memory=512Mi --cpu=1 --timeout=180s
 
 gcloud functions deploy followup-run \
   --gen2 --runtime=python312 --region=us-central1 \
   --source=followup-agent --entry-point=followup_run \
   --trigger-http --no-allow-unauthenticated \
-  --env-vars-file=followup-agent/env-vars.yaml
+  --env-vars-file=followup-agent/env-vars.yaml \
+  --memory=512Mi --cpu=1 --timeout=300s
 ```
 
-Then register the Telegram webhook (pointing at the deployed `extraction-webhook` URL, with `X-Telegram-Bot-Api-Secret-Token` set to `TELEGRAM_WEBHOOK_SECRET`) and a Cloud Scheduler job (pointing at `followup-run`, daily, with an OIDC token since it's not publicly invokable).
+`--memory=512Mi --cpu=1` (default is a much smaller `0.1666` CPU) — needed because cold-starting `google-adk` plus a live Gemini call regularly took longer than the default resources allow, causing 504s.
+
+Then register the Telegram webhook:
+
+```
+curl -X POST "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook" \
+  -d "url=https://us-central1-meeting-followup-agent-mtsv.cloudfunctions.net/extraction-webhook" \
+  -d "secret_token=<TELEGRAM_WEBHOOK_SECRET>"
+```
+
+### 5. Cloud Scheduler (Follow-up Agent)
+
+`followup-run` is deployed with `--no-allow-unauthenticated`, so Cloud Scheduler needs a dedicated service account with `roles/run.invoker` on it:
+
+```
+gcloud iam service-accounts create scheduler-invoker \
+  --display-name="Cloud Scheduler invoker for followup-run"
+
+gcloud run services add-iam-policy-binding followup-run \
+  --region=us-central1 \
+  --member="serviceAccount:scheduler-invoker@meeting-followup-agent-mtsv.iam.gserviceaccount.com" \
+  --role="roles/run.invoker"
+
+gcloud scheduler jobs create http followup-daily \
+  --schedule="0 9 * * *" \
+  --uri="https://us-central1-meeting-followup-agent-mtsv.cloudfunctions.net/followup-run" \
+  --http-method=POST \
+  --oidc-service-account-email="scheduler-invoker@meeting-followup-agent-mtsv.iam.gserviceaccount.com" \
+  --oidc-token-audience="https://us-central1-meeting-followup-agent-mtsv.cloudfunctions.net/followup-run" \
+  --location=us-central1 \
+  --time-zone="America/Lima" \
+  --attempt-deadline=300s
+```
+
+To test without waiting for the daily schedule: `gcloud scheduler jobs run followup-daily --location=us-central1`, or invoke directly with an impersonated identity token (see git history / commit notes for the exact command used during development).
 
 ## Status
 
-Day 2 of 6 — Extraction Agent is fully wired up (voice/text → Gemini 3.5 Flash on Vertex AI → structured tasks → Firestore → Telegram confirmation) and deployed to Cloud Functions, verified end-to-end with real Telegram messages. Follow-up Agent is still a stub.
+Day 3 of 6 — Both agents are fully wired up and deployed:
+- **Extraction Agent**: voice/text → Gemini 3.5 Flash on Vertex AI → structured tasks → Firestore → Telegram confirmation. Verified end-to-end with real Telegram messages.
+- **Follow-up Agent**: Cloud Scheduler (daily, `America/Lima`) → reviews pending tasks → autonomously reminds or escalates via Gemini → updates Firestore + `events` audit trail. Verified end-to-end through 3 live invocations against a real task: `remind (neutral)` → `remind (friendly-reminder)` → `escalate (urgent)`, with `status` flipping to `escalated` on the third run — no human in the loop.
+
+Dashboard (React) is still to be built.
 
 Note on Vertex AI model location: `gemini-3.5-flash` (and other recent Gemini models) are only served from the `global` Vertex AI location in this project, not regional ones like `us-central1` — see `VERTEX_AI_LOCATION` in `.env.example`. Infra (Cloud Functions, Firestore) stays in `us-central1`; only the model calls use `global`.

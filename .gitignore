@@ -11,3 +11,4 @@ build/
 *.log
 gcp-key*.json
 env-vars.yaml
+.claude/
