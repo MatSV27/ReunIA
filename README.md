@@ -121,10 +121,15 @@ To test without waiting for the daily schedule: `gcloud scheduler jobs run follo
 
 ## Status
 
-Day 3 of 6 — Both agents are fully wired up and deployed:
+Day 3 of 6 — Both agents and the dashboard are built and deployed:
 - **Extraction Agent**: voice/text → Gemini 3.5 Flash on Vertex AI → structured tasks → Firestore → Telegram confirmation. Verified end-to-end with real Telegram messages.
 - **Follow-up Agent**: Cloud Scheduler (daily, `America/Lima`) → reviews pending tasks → autonomously reminds or escalates via Gemini → updates Firestore + `events` audit trail. Verified end-to-end through 3 live invocations against a real task: `remind (neutral)` → `remind (friendly-reminder)` → `escalate (urgent)`, with `status` flipping to `escalated` on the third run — no human in the loop.
+- **Dashboard**: React + Firestore client SDK, no backend of its own. Lists tasks (escalated first), lets you mark one done. Access controlled by Firestore security rules (public read, writes limited to `status`/`updated_at`), verified with a standalone script that confirmed both the allowed update and a rejected one. See `dashboard/README.md`.
 
-Dashboard (React) is still to be built.
+Still to do: architecture diagram, demo video, submission write-up.
 
-Note on Vertex AI model location: `gemini-3.5-flash` (and other recent Gemini models) are only served from the `global` Vertex AI location in this project, not regional ones like `us-central1` — see `VERTEX_AI_LOCATION` in `.env.example`. Infra (Cloud Functions, Firestore) stays in `us-central1`; only the model calls use `global`.
+## Notes on gotchas hit during development
+
+- **Vertex AI model location**: `gemini-3.5-flash` (and other recent Gemini models) are only served from the `global` Vertex AI location in this project, not regional ones like `us-central1` — see `VERTEX_AI_LOCATION` in `.env.example`. Infra (Cloud Functions, Firestore) stays in `us-central1`; only the model calls use `global`.
+- **Firebase setup without the `firebase` CLI**: `firebase login` requires a real interactive terminal/browser flow that wasn't available in the dev environment used here. Firebase was instead added to the GCP project and the web app registered via direct calls to the Firebase Management API (`firebase.googleapis.com`) and Firebase Rules API (`firebaserules.googleapis.com`), authenticated with the already-logged-in `gcloud` user token (`gcloud auth print-access-token`) plus an `x-goog-user-project` header. If you have a working `firebase login`, the equivalent CLI commands are simpler — see `dashboard/README.md`.
+- **ADC quota project**: if Vertex AI calls fail with `PERMISSION_DENIED` despite correct IAM roles, check `gcloud auth application-default set-quota-project` — stale Application Default Credentials from a different project/account on the same machine will cause exactly this.

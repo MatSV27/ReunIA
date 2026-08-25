@@ -1,0 +1,15 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /tasks/{taskId} {
+      allow get, list: if true;
+      allow update: if request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updated_at']);
+      allow create, delete: if false;
+
+      match /events/{eventId} {
+        allow get, list: if true;
+        allow write: if false;
+      }
+    }
+  }
+}
