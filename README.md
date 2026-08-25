@@ -6,6 +6,10 @@ Built for the **All Things Agentic Hackathon** (Taskmaster track).
 
 ## Architecture
 
+![Architecture diagram: two independent flows share one Firestore database. A human-triggered flow (indigo) goes Telegram -> Extraction Agent -> Firestore -> confirmation back to Telegram. An autonomous flow (amber) goes Cloud Scheduler -> Follow-up Agent -> Firestore (with an optional tool call to check a task's reminder history) -> a consolidated digest back to Telegram, running daily with no human involved. A dashboard reads and writes Firestore directly, bypassing both Cloud Functions.](docs/architecture-diagram.svg)
+
+[Interactive version with theme support and captions](https://claude.ai/code/artifact/b1484177-d594-4c80-85d5-2f9378e21471)
+
 - **Extraction Agent** (Google ADK, Gemini) — Cloud Function triggered by a Telegram webhook. Transcribes voice notes, extracts action items as structured JSON, writes them to Firestore, confirms back on Telegram.
 - **Follow-up Agent** (Google ADK, Gemini, with a real tool call) — Cloud Function triggered daily by Cloud Scheduler. Reasons over the *whole* pending-task list per chat in one call (not per-task classification), decides remind/escalate/skip per task, notices cross-task patterns, and sends at most one consolidated digest — always addressed to the person who owns the chat, never to a task's owner (they never talk to the bot). Can call `get_task_events(task_id)` itself when a task's reminder count alone doesn't tell the whole story.
 - **Firestore** — task state (see `docs/firestore-schema.md`).

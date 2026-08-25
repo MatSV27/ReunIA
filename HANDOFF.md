@@ -12,7 +12,7 @@ All three core pieces are built, deployed to GCP, and verified working end-to-en
 2. **Follow-up Agent** (`followup-agent/`) — Cloud Function, authenticated only. Triggered daily by Cloud Scheduler → groups all pending tasks by `source_chat_id` → for each chat, **one ADK call reasons over the entire task list at once** (not per-task classification): returns a `remind`/`escalate`/`skip` decision per task, plus a single consolidated, prioritized digest message that calls out cross-task patterns when there is one (e.g. the same owner behind on multiple items). Sends at most one Telegram message per chat per run, never one per task. Updates Firestore + appends to `tasks/{id}/events` (audit trail). This portfolio-reasoning design replaced an earlier per-task-classification version — see "Why the Follow-up Agent redesign" below.
 3. **Dashboard** (`dashboard/`) — React + Vite, no backend of its own. Reads `tasks` straight from Firestore via the client SDK in real time, lets you mark a task done. Gated by Firestore security rules, not auth (see Known simplifications below).
 
-Submission checklist still open: **architecture diagram, demo video (≤4 min), submission text/write-up.** No more core functionality is strictly required — see `Context.md` §6 for the full checklist.
+Submission checklist still open: **demo video (≤4 min), submission text/write-up.** Architecture diagram is done (`docs/architecture-diagram.svg`, embedded in root `README.md`; there's also a themed interactive version published as a Claude Artifact — **private by default**, share it from the artifact's own share menu before linking it anywhere a judge will click). No more core functionality is strictly required — see `Context.md` §6 for the full checklist.
 
 ## Infrastructure inventory
 
@@ -75,7 +75,7 @@ If iterating further in the same direction: Google Calendar (or any other real e
 
 ## Suggested next steps (in priority order)
 
-1. **Architecture diagram** — required for submission (`Context.md` §6). All three components and their GCP services are stable now; a good time to draw this since nothing about the architecture is expected to change further.
+1. ~~Architecture diagram~~ — done (`docs/architecture-diagram.svg`, `README.md`).
 2. **Demo video** (≤4 min, must show Google Cloud backend running — Cloud Console, function logs, or the `.run.app` URL). Suggested beats: (a) send a real voice note/text to the bot, show the Firestore write + Telegram confirmation live; (b) show the dashboard with the escalated seeded task and explain how it got there; (c) show Cloud Scheduler / Cloud Functions logs as deployment proof.
 3. **Submission write-up** — features, tech stack, data sources, learnings. `Context.md` §6 has the exact checklist.
 4. Optional, time-permitting: deploy the dashboard to Firebase Hosting for a live URL (`dashboard/README.md` has the commands — same CLI-login caveat as above may apply; may need the REST-API approach again, or ask the user to run `firebase login` themselves via a truly interactive terminal outside this session).
