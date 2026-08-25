@@ -16,7 +16,7 @@ One document per action item extracted from a meeting note.
 | `reminder_count`       | number    | How many reminders have been sent (default `0`)                             |
 | `last_reminder_at`     | timestamp \| null | When the last reminder was sent                                    |
 | `escalated`            | boolean   | Whether the task has been escalated (default `false`)                       |
-| `escalated_to`         | string \| null | Who was notified on escalation                                         |
+| `escalated_to`         | string \| null | Unused — see note below                                                |
 | `created_at`           | timestamp | When the task was extracted                                                 |
 | `updated_at`           | timestamp | Last modification                                                           |
 
@@ -26,11 +26,14 @@ Audit trail of every autonomous action the Follow-up Agent takes on a task — t
 
 | Field       | Type      | Description                                          |
 | ----------- | --------- | ----------------------------------------------------- |
-| `type`      | string    | `reminder` \| `escalation` \| `completed`      |
-| `tone`      | string \| null | Tone Gemini chose for the message (e.g. `neutral`, `urgent`) |
-| `message`   | string \| null | The actual message text sent via Telegram         |
+| `type`      | string    | `remind` \| `escalate`      |
+| `message`   | string    | The digest message this task was mentioned in (see note below — shared across all tasks in the same run's digest) |
 | `timestamp` | timestamp | When the event occurred                                |
 
 ## Escalation rule
 
-`reminder_count >= 2` and still `pending` → next Follow-up Agent run escalates instead of reminding again: tone shifts to urgent and/or `escalated_to` gets notified. This is the autonomy signal for judging (Innovation & Operational Utility, 40%).
+`reminder_count >= 2` and still `pending` → next Follow-up Agent run escalates instead of reminding again: the task's `status` becomes `"escalated"` and the digest's tone shifts to urgent for that item. This is the autonomy signal for judging (Innovation & Operational Utility, 40%).
+
+## Note: one digest per chat, not one message per task
+
+The Follow-up Agent reasons over a chat's *entire* pending-task list in a single call (see `docs/telegram-webhook-contract.md`), so it can prioritize across tasks and call out cross-task patterns (e.g. the same owner behind on multiple items), and sends **at most one consolidated Telegram message per chat per run** rather than spamming one message per task. `escalated_to` is unused — the bot only ever has a chat with the person who created the tasks, so escalation changes tone and `status`, not the recipient.

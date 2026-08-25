@@ -1,8 +1,13 @@
 # Follow-up Agent (Google ADK)
 #
-# Given a pending task's state (reminder_count, due_date, description, owner),
-# decides autonomously whether to: send a reminder, escalate, or do nothing —
-# and drafts the message text/tone via Gemini.
+# Reasons over Mateo's *entire* portfolio of pending commitments in one call --
+# not one isolated classification per task -- so it can prioritize across tasks,
+# notice cross-task patterns (e.g. one person behind on multiple items), and
+# write a single consolidated digest instead of spamming one message per task.
+#
+# The bot only has a chat with Mateo (task owners like "Carla" never talk to
+# it), so every message is addressed to him: a personal accountability
+# assistant surfacing what's going stale, not a multi-user notifier.
 
 import asyncio
 import datetime
@@ -25,60 +30,70 @@ MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash")
 APP_NAME = "followup-agent"
 USER_ID = "followup-agent"  # single-tenant service account identity for the ADK session
 
-ESCALATION_THRESHOLD = 2  # reminder_count >= this -> escalate instead of remind
+ESCALATION_THRESHOLD = 2  # reminder_count >= this on a still-pending task -> escalate
 
-DECISION_INSTRUCTION = """You are a follow-up assistant that autonomously nudges people about pending meeting action items via Telegram.
+PLANNING_INSTRUCTION = """You are Mateo's personal accountability assistant. You review his full list of currently pending commitments from meetings -- things other people (or he himself) agreed to do -- and decide what's worth surfacing today.
 
-The input describes today's date and one pending task: its description, owner, due date (or "none"), and how many reminders have already been sent for it.
+You are given today's date and a list of tasks. For each task you know: its id, description, who owns it, due date (or "none"), and how many times Mateo has already been sent a digest mentioning it.
 
-Decide exactly one action:
-- "escalate": the task has already been reminded {escalation_threshold} or more times and is still pending. Shift to a noticeably more urgent tone than a normal reminder.
-- "remind": a nudge is warranted now (due date is today, already passed, within the next couple of days, or no due date was given but it's reasonable to check in).
-- "skip": no reason to act right now — e.g. reminder_count is 0 and the due date is comfortably far in the future (more than 3 days away).
+For each task, decide one action:
+- "skip": not worth mentioning today -- comfortably far from its due date and never reminded yet.
+- "remind": worth a mention today -- due soon, already overdue, or has no due date but was never checked on.
+- "escalate": already mentioned {escalation_threshold} or more times and still pending. This needs a noticeably more urgent tone than a normal reminder.
 
-Then draft a short, natural Telegram message (1-3 sentences) addressed to the owner by name, in the same language as the task description, with a tone matching the action:
-- "remind" -> tone "neutral" (first nudge) or "friendly-reminder" (later nudge)
-- "escalate" -> tone "urgent"
-- "skip" -> tone "none", message ""
+Then look across ALL the tasks TOGETHER, not just one at a time, and notice anything genuinely useful: is the same person responsible for multiple stale items? Is one task far more overdue than the rest and deserves to be called out first? Only mention a pattern if there really is one -- don't force it.
 
-Return your decision as the required structured output.
+Finally, write ONE short Telegram message addressed directly to Mateo (never to the task owners -- they don't use this bot, only he reads this) that:
+- Leads with whatever needs the most urgent attention (escalations first).
+- Mentions any cross-task pattern you noticed, if any.
+- Omits every task you decided to "skip" -- don't clutter the message with them.
+- Is natural, brief, and conversational -- not a bulleted status report.
+- Is an empty string "" if every task was skipped, so nothing gets sent that day.
+
+Return your decision for every task, plus the message.
 """.format(escalation_threshold=ESCALATION_THRESHOLD)
 
 
-class FollowUpDecision(BaseModel):
+class TaskDecision(BaseModel):
+    task_id: str
     action: str  # "remind" | "escalate" | "skip"
-    tone: str
-    message: str
+
+
+class FollowUpPlan(BaseModel):
+    digest_message: str
+    decisions: list[TaskDecision]
 
 
 _agent = Agent(
     name="followup_agent",
     model=MODEL,
-    description="Decides whether to remind or escalate a pending task, and drafts the message.",
-    instruction=DECISION_INSTRUCTION,
-    output_schema=FollowUpDecision,
+    description="Reasons over the full pending-task portfolio and drafts one consolidated digest.",
+    instruction=PLANNING_INSTRUCTION,
+    output_schema=FollowUpPlan,
 )
 
 _runner = InMemoryRunner(agent=_agent, app_name=APP_NAME)
 
 
-def decide_action(task: dict) -> dict:
-    """Returns {"action": "remind"|"escalate"|"skip", "tone": str, "message": str}."""
-    return asyncio.run(_decide_action_async(task))
+def plan_followups(tasks: list[dict]) -> dict:
+    """tasks: [{"id", "description", "owner_name", "due_date" (datetime|None), "reminder_count"}, ...]
+
+    Returns {"digest_message": str, "decisions": [{"task_id", "action"}, ...]}.
+    """
+    return asyncio.run(_plan_followups_async(tasks))
 
 
-async def _decide_action_async(task: dict) -> dict:
+async def _plan_followups_async(tasks: list[dict]) -> dict:
     today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
-    due_date = task.get("due_date")
-    due_date_str = due_date.strftime("%Y-%m-%d") if due_date else "none"
 
-    prompt = (
-        f"Today's date: {today}\n"
-        f"Task: {task['description']}\n"
-        f"Owner: {task['owner_name']}\n"
-        f"Due date: {due_date_str}\n"
-        f"Reminders already sent: {task.get('reminder_count', 0)}"
-    )
+    lines = [f"Today's date: {today}", "", "Pending tasks:"]
+    for t in tasks:
+        due = t["due_date"].strftime("%Y-%m-%d") if t.get("due_date") else "none"
+        lines.append(
+            f"- id={t['id']} | description=\"{t['description']}\" | owner={t['owner_name']} "
+            f"| due_date={due} | reminders_sent={t.get('reminder_count', 0)}"
+        )
+    prompt = "\n".join(lines)
 
     session = await _runner.session_service.create_session(app_name=APP_NAME, user_id=USER_ID)
 

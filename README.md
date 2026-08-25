@@ -1,13 +1,13 @@
 # Meeting Follow-up Agent
 
-Turns meeting voice notes / text sent to a Telegram bot into tracked action items, and follows up on them autonomously — reminding, and escalating when reminders go unanswered.
+Turns meeting voice notes / text sent to a Telegram bot into tracked action items, and follows up on them autonomously: a daily agent reasons over your *entire* pending-task portfolio at once — not one task in isolation — prioritizing, spotting cross-task patterns (e.g. the same person behind on multiple commitments), and escalating tone when reminders go unanswered, all folded into a single consolidated digest instead of one message per task.
 
 Built for the **All Things Agentic Hackathon** (Taskmaster track).
 
 ## Architecture
 
 - **Extraction Agent** (Google ADK, Gemini) — Cloud Function triggered by a Telegram webhook. Transcribes voice notes, extracts action items as structured JSON, writes them to Firestore, confirms back on Telegram.
-- **Follow-up Agent** (Google ADK, Gemini) — Cloud Function triggered daily by Cloud Scheduler. Reviews pending tasks and autonomously decides whether to remind or escalate (after 2 unanswered reminders, tone shifts and/or a different person gets notified).
+- **Follow-up Agent** (Google ADK, Gemini) — Cloud Function triggered daily by Cloud Scheduler. Reasons over the *whole* pending-task list per chat in one call (not per-task classification), decides remind/escalate/skip per task, notices cross-task patterns, and sends at most one consolidated digest — always addressed to the person who owns the chat, never to a task's owner (they never talk to the bot).
 - **Firestore** — task state (see `docs/firestore-schema.md`).
 - **Dashboard** — minimal React app reading Firestore directly (view tasks, mark as done).
 
@@ -17,7 +17,7 @@ See `docs/telegram-webhook-contract.md` for the full request/response contract.
 
 ```
 extraction-agent/   Cloud Function: Telegram webhook -> transcription -> extraction -> Firestore
-followup-agent/     Cloud Function: Cloud Scheduler -> pending task review -> reminder/escalation
+followup-agent/     Cloud Function: Cloud Scheduler -> portfolio-wide review -> one digest/chat
 dashboard/          React app (Firestore reader)
 docs/               Schema + webhook contract docs
 ```
@@ -123,7 +123,7 @@ To test without waiting for the daily schedule: `gcloud scheduler jobs run follo
 
 Day 3 of 6 — Both agents and the dashboard are built and deployed:
 - **Extraction Agent**: voice/text → Gemini 3.5 Flash on Vertex AI → structured tasks → Firestore → Telegram confirmation. Verified end-to-end with real Telegram messages.
-- **Follow-up Agent**: Cloud Scheduler (daily, `America/Lima`) → reviews pending tasks → autonomously reminds or escalates via Gemini → updates Firestore + `events` audit trail. Verified end-to-end through 3 live invocations against a real task: `remind (neutral)` → `remind (friendly-reminder)` → `escalate (urgent)`, with `status` flipping to `escalated` on the third run — no human in the loop.
+- **Follow-up Agent**: Cloud Scheduler (daily, `America/Lima`) → one Gemini call reasons over the *entire* pending-task portfolio per chat → per-task remind/escalate/skip decisions + one consolidated, prioritized digest (never one message per task) → updates Firestore + `events` audit trail. Verified end-to-end in production: a portfolio with two overdue tasks from the same owner produced one message that explicitly called out the pattern ("Carla has two overdue items") and correctly escalated only the one with 2+ prior reminders, while a third unrelated task 15 days out was silently skipped — no human in the loop. This is a deliberate upgrade from an earlier per-task-classification design (see `HANDOFF.md` for why).
 - **Dashboard**: React + Firestore client SDK, no backend of its own. Lists tasks (escalated first), lets you mark one done. Access controlled by Firestore security rules (public read, writes limited to `status`/`updated_at`), verified with a standalone script that confirmed both the allowed update and a rejected one. See `dashboard/README.md`.
 
 Still to do: architecture diagram, demo video, submission write-up.
