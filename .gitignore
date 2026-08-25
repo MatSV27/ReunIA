@@ -12,3 +12,5 @@ build/
 gcp-key*.json
 env-vars.yaml
 .claude/
+.agents/
+skills-lock.json
