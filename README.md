@@ -13,6 +13,8 @@ It's two autonomous Gemini agents wired to one Telegram bot and one Firestore da
 
 Built for the **All Things Agentic Hackathon** — **Taskmaster** track (Bring Your Own Friction: this automates a real personal chore — tracking and chasing commitments from my own meetings).
 
+**Live dashboard:** [meeting-followup-agent-mtsv.web.app](https://meeting-followup-agent-mtsv.web.app/) (Firebase Hosting). It reads the same Firestore data the agents write to — see *Testing notes* below for what you can/can't do with it without your own Telegram bot.
+
 ## Mandatory requirements checklist
 
 | Requirement | How this project satisfies it |
@@ -210,15 +212,31 @@ To trigger a run on demand instead of waiting for the schedule: `gcloud schedule
 
 ### 6. Dashboard hosting (optional)
 
+The live dashboard at [meeting-followup-agent-mtsv.web.app](https://meeting-followup-agent-mtsv.web.app/) is deployed this way. If `firebase login` is authenticated as the same Google account that owns the GCP project, it's just:
+
 ```
 cd dashboard
 npm run build
 firebase deploy --only hosting --project meeting-followup-agent-mtsv
 ```
 
+(`firebase.json` and `.firebaserc` at the repo root already point Hosting at `dashboard/dist`.)
+
+If the Firebase CLI is logged into a *different* Google account than the one with access to the project (which is what happened here — `firebase login:list` showed an account with no visibility into `meeting-followup-agent-mtsv`, while `gcloud` was correctly authenticated as the project owner), skip the CLI and hit the Firebase Hosting REST API directly with a `gcloud` access token instead, the same workaround already used elsewhere in this project for the Management/Rules APIs:
+
+1. `POST .../sites/{siteId}/versions` to create a version.
+2. Gzip every file under `dashboard/dist`, hash each with SHA-256, and call `sites.versions.populateFiles` with the `{path: hash}` manifest.
+3. `PUT` each gzipped file to the `uploadUrl` the previous call returns, keyed by its hash.
+4. `PATCH` the version to `status: FINALIZED`.
+5. `POST .../sites/{siteId}/releases?versionName=...` to actually publish it.
+
+All calls authenticated with `Authorization: Bearer $(gcloud auth print-access-token)` plus `x-goog-user-project: meeting-followup-agent-mtsv`.
+
 ## Testing notes
 
 The Telegram bot in this build is wired to one personal chat (this is a "bring your own friction" tool solving a real personal workflow, not a public multi-tenant service), so there's no public bot handle to message directly. The demo video shows the full loop end to end — a real voice note in, structured tasks out, and an unattended scheduled run producing an escalation — and the steps above are enough to stand up a fresh instance against your own Telegram bot and GCP project to verify it independently.
+
+The dashboard, though, *is* live and public: [meeting-followup-agent-mtsv.web.app](https://meeting-followup-agent-mtsv.web.app/). It reads real Firestore data written by both agents, so a judge can see actual tasks, real due dates, and the agent's real reminder/escalation messages without deploying anything. Per `dashboard/firestore.rules`, anyone can read, and the "Mark done" button genuinely writes to Firestore (restricted to only the `status`/`updated_at` fields, no create/delete) — that's an intentional simplification for a solo hackathon demo with non-sensitive data, not a production security posture (see `dashboard/README.md`).
 
 ## Findings & learnings
 
