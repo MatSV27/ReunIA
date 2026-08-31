@@ -54,6 +54,14 @@ Cloud Function, triggered daily by Cloud Scheduler — nobody has to open the ap
 
 A React app that reads and writes Firestore directly — no backend of its own. List and calendar views, grouped by status (things needing attention surfaced first), a workload breakdown by owner, and a "mark done" action. Access is gated by Firestore Security Rules rather than a login: anyone can read, but a client can only ever change a task's `status`/`updated_at`, nothing else (see `dashboard/README.md`).
 
+| List view | Task detail |
+| --- | --- |
+| ![Dashboard list view: three escalated tasks under "Needs attention" for Diego, Renata, and Marco, each overdue with 3 reminders sent, plus a sidebar showing 4 open / 3 needing attention / 4 total tasks and a per-owner workload breakdown.](docs/screenshots/dashboard-list.png) | ![Expanded task detail for Marco's overdue NDA task, showing the original Telegram message and a timeline of the Follow-up Agent's actual reminder and escalation messages, each timestamped.](docs/screenshots/dashboard-detail.png) |
+
+Escalated tasks surface first, with the exact reminder/escalation messages the Follow-up Agent sent — not just a status label — visible per task. There's also a calendar view for seeing everything by due date:
+
+![Calendar view of the dashboard, showing August 2026 with dots marking task due dates and a day panel listing what's due on the selected date.](docs/screenshots/dashboard-calendar.png)
+
 Full data contract: `docs/firestore-schema.md` (Firestore schema) and `docs/telegram-webhook-contract.md` (Telegram + Cloud Scheduler request/response contract).
 
 ## Tech stack
@@ -85,15 +93,30 @@ docs/               Firestore schema + Telegram/Scheduler contract docs
 ### 1. Prerequisites
 
 - Python 3.12+, Node 20+
+- A Google Cloud project with billing enabled and these APIs turned on:
+  ```
+  gcloud services enable aiplatform.googleapis.com cloudfunctions.googleapis.com \
+    run.googleapis.com firestore.googleapis.com cloudscheduler.googleapis.com
+  ```
 - `gcloud` CLI authenticated (`gcloud auth login`), with Application Default Credentials set up (`gcloud auth application-default login`) and the project selected:
   ```
   gcloud config set project meeting-followup-agent-mtsv
   ```
-- A Telegram bot token from [@BotFather](https://t.me/BotFather)
+- A Telegram bot (see table below for how to create one)
+- (optional, only needed for the dashboard) a Firebase project linked to the same GCP project
 
-### 2. Environment variables
+### 2. Where to get each credential
 
-Copy `.env.example` to `.env` and fill in `TELEGRAM_BOT_TOKEN` (from BotFather). `GCP_PROJECT_ID`, `GCP_REGION`, `TELEGRAM_WEBHOOK_SECRET`, `GEMINI_MODEL`, and `VERTEX_AI_LOCATION` are already set to working defaults for this project. There is no API key to configure — Gemini access goes through Vertex AI using whichever credentials `gcloud`/the Cloud Function's service account already has.
+Copy `.env.example` to `.env` (and `dashboard/.env.example` to `dashboard/.env`) and fill these in:
+
+| Variable | Where it comes from |
+| --- | --- |
+| `TELEGRAM_BOT_TOKEN` | Open a chat with [@BotFather](https://t.me/BotFather) on Telegram, send `/newbot`, and follow the prompts (a display name, then a username ending in `bot`). BotFather replies with a token that looks like `123456789:AA...` — that whole string is the value. |
+| `TELEGRAM_WEBHOOK_SECRET` | Not issued by anyone — you make it up yourself (e.g. `openssl rand -hex 20`). It's a shared secret Telegram echoes back on every webhook call, which is how `extraction-agent/main.py` rejects requests that aren't really from Telegram. |
+| `GCP_PROJECT_ID` / `GCP_REGION` | Your own Google Cloud project id ([console.cloud.google.com](https://console.cloud.google.com) → create/select a project) and the region you deploy the Cloud Functions to. |
+| `FIRESTORE_DATABASE` | Leave as `(default)` unless you've created a named Firestore database for the project — the code always connects with `firestore.Client()`, so this value isn't currently read by either agent. |
+| `GEMINI_MODEL` / `VERTEX_AI_LOCATION` | Not a credential, just config — which model (`gemini-3.5-flash`) and Vertex AI location (`global`, see *Findings & learnings* below) to call. **No Gemini API key is used anywhere in this project.** Vertex AI is authenticated with whichever identity already runs the code (`gcloud auth application-default login` locally, the Cloud Function's own runtime service account once deployed) — that identity just needs the `roles/aiplatform.user` IAM role. |
+| `VITE_FIREBASE_*` (`dashboard/.env` only) | [Firebase console](https://console.firebase.google.com) → add Firebase to the same GCP project → Project settings → General → "Your apps" → add a Web app → copy the `firebaseConfig` object shown there straight into `dashboard/.env` (or run `firebase apps:sdkconfig web <appId>` if you have the Firebase CLI). This is a public client key, safe to ship to the browser — see `dashboard/README.md` for how access is actually locked down with Firestore Security Rules instead. |
 
 ### 3. Run locally
 
