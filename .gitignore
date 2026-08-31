@@ -14,3 +14,15 @@ env-vars.yaml
 .claude/
 .agents/
 skills-lock.json
+
+# Internal working notes -- not part of the public submission
+HANDOFF.md
+Context.md
+docs/architecture-diagram-blueprint.md
+docs/architecture-diagram.drawio
+docs/architecture-diagram.svg
+
+# Video production assets and demo-data scripts -- not product code
+video/
+extraction-agent/reset_tasks.py
+extraction-agent/seed_demo_tasks.py

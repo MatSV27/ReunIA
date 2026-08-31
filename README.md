@@ -1,37 +1,91 @@
-# Meeting Follow-up Agent
+<p align="center">
+  <img src="public/ReuniaLogo.jpg" alt="ReunIA" width="420">
+</p>
 
-Turns meeting voice notes / text sent to a Telegram bot into tracked action items, and follows up on them autonomously: a daily agent reasons over your *entire* pending-task portfolio at once — not one task in isolation — prioritizing, spotting cross-task patterns (e.g. the same person behind on multiple commitments), and escalating tone when reminders go unanswered, all folded into a single consolidated digest instead of one message per task.
+# ReunIA
 
-Built for the **All Things Agentic Hackathon** (Taskmaster track).
+**The friction:** meetings produce commitments ("I'll send you the report Friday," "Carla owes me the deck by next week"), but nobody writes them down, and even when someone does, nobody chases them. ReunIA fixes both halves: send it a voice note or text after a meeting and it extracts every action item on its own; from then on, a second agent silently watches your whole list of open commitments and only speaks up when something actually needs your attention — no dashboard-checking, no manual reminders, no per-task notifications required.
 
-## Architecture
+It's two autonomous Gemini agents wired to one Telegram bot and one Firestore database, plus a small dashboard to see what they're doing:
 
-![Architecture diagram: two independent flows share one Firestore database. A human-triggered flow (indigo) goes Telegram -> Extraction Agent -> Firestore -> confirmation back to Telegram. An autonomous flow (amber) goes Cloud Scheduler -> Follow-up Agent -> Firestore (with an optional tool call to check a task's reminder history) -> a consolidated digest back to Telegram, running daily with no human involved. A dashboard reads and writes Firestore directly, bypassing both Cloud Functions.](docs/architecture-diagram.svg)
+1. **Extraction Agent** — turns a voice note or text message into structured tasks the moment it arrives.
+2. **Follow-up Agent** — runs on its own every day, reasons over *every* open task at once (not one at a time), and decides who needs a nudge, who needs to be escalated, and who can wait — then sends a single message with everything that matters.
 
-[Interactive version with theme support and captions](https://claude.ai/code/artifact/b1484177-d594-4c80-85d5-2f9378e21471)
+Built for the **All Things Agentic Hackathon** — **Taskmaster** track (Bring Your Own Friction: this automates a real personal chore — tracking and chasing commitments from my own meetings).
 
-- **Extraction Agent** (Google ADK, Gemini) — Cloud Function triggered by a Telegram webhook. Transcribes voice notes, extracts action items as structured JSON, writes them to Firestore, confirms back on Telegram.
-- **Follow-up Agent** (Google ADK, Gemini, with a real tool call) — Cloud Function triggered daily by Cloud Scheduler. Reasons over the *whole* pending-task list per chat in one call (not per-task classification), decides remind/escalate/skip per task, notices cross-task patterns, and sends at most one consolidated digest — always addressed to the person who owns the chat, never to a task's owner (they never talk to the bot). Can call `get_task_events(task_id)` itself when a task's reminder count alone doesn't tell the whole story.
-- **Firestore** — task state (see `docs/firestore-schema.md`).
-- **Dashboard** — minimal React app reading Firestore directly (view tasks, mark as done).
+## Mandatory requirements checklist
 
-See `docs/telegram-webhook-contract.md` for the full request/response contract.
+| Requirement | How this project satisfies it |
+| --- | --- |
+| Gemini 3.5 (or newer) via Gemini API / Vertex AI | `gemini-3.5-flash`, called through **Vertex AI** (`GOOGLE_GENAI_USE_VERTEXAI=True`), authenticated with Application Default Credentials — no API key needed |
+| A Google Agent Framework | **Google ADK** (`google-adk`) — both agents are `google.adk.agents.Agent` instances run through `InMemoryRunner`, one of them with a real ADK tool (`get_task_events`) |
+| A Google Cloud infrastructure service | **Cloud Functions (2nd gen, built on Cloud Run)** for both agents, **Firestore** as the database, **Cloud Scheduler** to trigger the autonomous run |
+
+## How it works
+
+![Architecture diagram: two independent flows share one Firestore database. A human-triggered flow (indigo, "Triggered by you") goes Telegram -> Extraction Agent -> Firestore -> confirmation back to Telegram. An autonomous flow (amber, "Triggered by the clock") goes Cloud Scheduler -> Follow-up Agent -> Firestore (with an optional tool call to check a task's reminder history) -> a consolidated digest back to Telegram, running daily with no human involved. A dashboard reads and writes Firestore directly, bypassing both Cloud Functions (teal, "Live view, no Cloud Function").](docs/Architecture.jpg)
+
+There are two independent flows sharing one Firestore database, plus a dashboard that reads/writes it directly:
+
+- **Triggered by you (indigo):** Telegram → Extraction Agent → Firestore → confirmation back to Telegram.
+- **Triggered by the clock (amber):** Cloud Scheduler → Follow-up Agent → Firestore (with an optional tool call back into Firestore to inspect a task's history) → one consolidated digest back to Telegram. Runs daily, end to end, with no human involved.
+- **Live view (teal):** the dashboard talks to Firestore directly — no Cloud Function in that path.
+
+### Extraction Agent
+
+Cloud Function, triggered by a Telegram webhook on every message.
+
+- Voice note → downloaded from Telegram, sent straight to Gemini for transcription.
+- Text message → used as-is.
+- Gemini (via ADK, structured output) extracts every action item as `{ description, owner_name, due_date }`, resolving relative dates ("next Friday") against the message's actual date.
+- Each task is written to Firestore, then a confirmation summarizing what was registered is sent back on Telegram.
+
+### Follow-up Agent
+
+Cloud Function, triggered daily by Cloud Scheduler — nobody has to open the app or ask for a status update.
+
+- Loads every `pending` task, grouped by chat, and hands the **entire list at once** to Gemini — not one classification call per task. This is what lets it notice things a per-task loop can't: the same person behind on three separate items, or one task that's dramatically more overdue than the rest.
+- For each task it decides `remind`, `escalate`, or `skip`, and drafts **one** consolidated Telegram message — never one message per task.
+- It has a real ADK tool, `get_task_events(task_id)`, and decides for itself when to call it: a raw `reminder_count` can't tell whether those reminders were spread over three stuck weeks or fired twice in the last two days, so for ambiguous cases it pulls the actual timestamped history before deciding how urgent to be.
+- The message is always addressed to the person who owns the Telegram chat — never to a task's owner (they never talk to the bot) — because escalation here means "get Mateo's attention," not "message a third party."
+- Firestore is updated (`reminder_count`, `status`, `escalated`) and every autonomous action is appended to a `tasks/{id}/events` audit trail — the proof that this ran with no human in the loop.
+
+### Dashboard
+
+A React app that reads and writes Firestore directly — no backend of its own. List and calendar views, grouped by status (things needing attention surfaced first), a workload breakdown by owner, and a "mark done" action. Access is gated by Firestore Security Rules rather than a login: anyone can read, but a client can only ever change a task's `status`/`updated_at`, nothing else (see `dashboard/README.md`).
+
+Full data contract: `docs/firestore-schema.md` (Firestore schema) and `docs/telegram-webhook-contract.md` (Telegram + Cloud Scheduler request/response contract).
+
+## Tech stack
+
+| Layer | Technology |
+| --- | --- |
+| Model | Gemini 3.5 Flash, via Vertex AI |
+| Agent framework | Google ADK (`google-adk`) — structured `output_schema`, one agent with a real tool |
+| Compute | Cloud Functions, 2nd gen (Cloud Run under the hood) |
+| Scheduling | Cloud Scheduler (daily cron, OIDC-authenticated invocation) |
+| Database | Firestore, native mode |
+| Messaging | Telegram Bot API (webhook in, `sendMessage`/`getFile` out) |
+| Frontend | React 19 + Vite, `firebase` JS SDK (Firestore client only) |
+| Hosting (dashboard, optional) | Firebase Hosting |
+
+**Data source:** this project's only external data is whatever the user actually says in their own meetings — voice notes or text sent to a personal Telegram bot. There's no synthetic corpus or third-party dataset; the "messy, unstructured input" the hackathon asks for is real, unedited speech, transcribed and structured entirely by the Extraction Agent.
 
 ## Project structure
 
 ```
 extraction-agent/   Cloud Function: Telegram webhook -> transcription -> extraction -> Firestore
 followup-agent/     Cloud Function: Cloud Scheduler -> portfolio-wide review -> one digest/chat
-dashboard/          React app (Firestore reader)
-docs/               Schema + webhook contract docs
+dashboard/          React app (Firestore reader/writer, no backend)
+docs/               Firestore schema + Telegram/Scheduler contract docs
 ```
 
-## Setup
+## Spin-up instructions
 
 ### 1. Prerequisites
 
 - Python 3.12+, Node 20+
-- `gcloud` CLI authenticated (`gcloud auth login`) with the project set:
+- `gcloud` CLI authenticated (`gcloud auth login`), with Application Default Credentials set up (`gcloud auth application-default login`) and the project selected:
   ```
   gcloud config set project meeting-followup-agent-mtsv
   ```
@@ -39,9 +93,9 @@ docs/               Schema + webhook contract docs
 
 ### 2. Environment variables
 
-Copy `.env.example` to `.env` and fill in `TELEGRAM_BOT_TOKEN` (from BotFather) and `GEMINI_API_KEY` (if not using Vertex AI ADC). `GCP_PROJECT_ID`, `GCP_REGION`, `TELEGRAM_WEBHOOK_SECRET` are already set for this project.
+Copy `.env.example` to `.env` and fill in `TELEGRAM_BOT_TOKEN` (from BotFather). `GCP_PROJECT_ID`, `GCP_REGION`, `TELEGRAM_WEBHOOK_SECRET`, `GEMINI_MODEL`, and `VERTEX_AI_LOCATION` are already set to working defaults for this project. There is no API key to configure — Gemini access goes through Vertex AI using whichever credentials `gcloud`/the Cloud Function's service account already has.
 
-### 3. Local development
+### 3. Run locally
 
 Each Cloud Function has its own `requirements.txt`:
 
@@ -59,9 +113,17 @@ pip install -r requirements.txt
 functions-framework --target=followup_run --debug
 ```
 
-### 4. Deploy
+Dashboard (see `dashboard/README.md` for the Firebase Web SDK config it needs):
 
-Uses an `--env-vars-file` (YAML) rather than passing `.env` directly, since `.env`'s comments/blank lines aren't valid `KEY=VALUE,KEY=VALUE` syntax. Hand-write `extraction-agent/env-vars.yaml` and `followup-agent/env-vars.yaml` (gitignored, never commit these):
+```
+cd dashboard
+npm install
+npm run dev
+```
+
+### 4. Deploy the agents
+
+Deploys use an `--env-vars-file` (YAML) rather than `.env` directly, since `.env`'s comments/blank lines aren't valid `KEY=VALUE,KEY=VALUE` syntax. Hand-write `extraction-agent/env-vars.yaml` and `followup-agent/env-vars.yaml` (gitignored — never commit these):
 
 ```yaml
 TELEGRAM_BOT_TOKEN: "..."
@@ -87,9 +149,9 @@ gcloud functions deploy followup-run \
   --memory=512Mi --cpu=1 --timeout=300s
 ```
 
-`--memory=512Mi --cpu=1` (default is a much smaller `0.1666` CPU) — needed because cold-starting `google-adk` plus a live Gemini call regularly took longer than the default resources allow, causing 504s.
+`--memory=512Mi --cpu=1` (the gen2 default is a much smaller `0.1666` CPU) — cold-starting `google-adk` plus a live Gemini call regularly took longer than the default resources allow, causing 504s.
 
-Then register the Telegram webhook:
+Register the Telegram webhook so Telegram starts calling `extraction-webhook`:
 
 ```
 curl -X POST "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook" \
@@ -97,7 +159,7 @@ curl -X POST "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook" \
   -d "secret_token=<TELEGRAM_WEBHOOK_SECRET>"
 ```
 
-### 5. Cloud Scheduler (Follow-up Agent)
+### 5. Schedule the Follow-up Agent
 
 `followup-run` is deployed with `--no-allow-unauthenticated`, so Cloud Scheduler needs a dedicated service account with `roles/run.invoker` on it:
 
@@ -121,19 +183,25 @@ gcloud scheduler jobs create http followup-daily \
   --attempt-deadline=300s
 ```
 
-To test without waiting for the daily schedule: `gcloud scheduler jobs run followup-daily --location=us-central1`, or invoke directly with an impersonated identity token (see git history / commit notes for the exact command used during development).
+To trigger a run on demand instead of waiting for the schedule: `gcloud scheduler jobs run followup-daily --location=us-central1`.
 
-## Status
+### 6. Dashboard hosting (optional)
 
-Day 3 of 6 — Both agents and the dashboard are built and deployed:
-- **Extraction Agent**: voice/text → Gemini 3.5 Flash on Vertex AI → structured tasks → Firestore → Telegram confirmation. Verified end-to-end with real Telegram messages.
-- **Follow-up Agent**: Cloud Scheduler (daily, `America/Lima`) → one Gemini call reasons over the *entire* pending-task portfolio per chat → per-task remind/escalate/skip decisions + one consolidated, prioritized digest (never one message per task) → updates Firestore + `events` audit trail. The agent has a real ADK tool, `get_task_events(task_id)`, and decides itself when to call it — e.g. two tasks reminded twice each look identical by count alone, but one whose reminders span three weeks is genuinely stuck while one reminded twice in the last two days is still fresh; the tool lets it tell those apart from real timestamps rather than a flat threshold. Verified end-to-end in production twice: (1) a portfolio with two overdue tasks from the same owner produced one message calling out the pattern and escalating only the one past threshold, while an unrelated task 15 days out was silently skipped; (2) two tasks with an identical `reminder_count` got different treatment (one escalated, one didn't) after the agent called `get_task_events` and read the actual timestamps. No human in the loop either time. This is a deliberate upgrade from an earlier per-task-classification design with no tool use — see `HANDOFF.md` for why.
-- **Dashboard**: React + Firestore client SDK, no backend of its own. Lists tasks (escalated first), lets you mark one done. Access controlled by Firestore security rules (public read, writes limited to `status`/`updated_at`), verified with a standalone script that confirmed both the allowed update and a rejected one. See `dashboard/README.md`.
+```
+cd dashboard
+npm run build
+firebase deploy --only hosting --project meeting-followup-agent-mtsv
+```
 
-Still to do: architecture diagram, demo video, submission write-up.
+## Testing notes
 
-## Notes on gotchas hit during development
+The Telegram bot in this build is wired to one personal chat (this is a "bring your own friction" tool solving a real personal workflow, not a public multi-tenant service), so there's no public bot handle to message directly. The demo video shows the full loop end to end — a real voice note in, structured tasks out, and an unattended scheduled run producing an escalation — and the steps above are enough to stand up a fresh instance against your own Telegram bot and GCP project to verify it independently.
 
-- **Vertex AI model location**: `gemini-3.5-flash` (and other recent Gemini models) are only served from the `global` Vertex AI location in this project, not regional ones like `us-central1` — see `VERTEX_AI_LOCATION` in `.env.example`. Infra (Cloud Functions, Firestore) stays in `us-central1`; only the model calls use `global`.
-- **Firebase setup without the `firebase` CLI**: `firebase login` requires a real interactive terminal/browser flow that wasn't available in the dev environment used here. Firebase was instead added to the GCP project and the web app registered via direct calls to the Firebase Management API (`firebase.googleapis.com`) and Firebase Rules API (`firebaserules.googleapis.com`), authenticated with the already-logged-in `gcloud` user token (`gcloud auth print-access-token`) plus an `x-goog-user-project` header. If you have a working `firebase login`, the equivalent CLI commands are simpler — see `dashboard/README.md`.
-- **ADC quota project**: if Vertex AI calls fail with `PERMISSION_DENIED` despite correct IAM roles, check `gcloud auth application-default set-quota-project` — stale Application Default Credentials from a different project/account on the same machine will cause exactly this.
+## Findings & learnings
+
+- **Reasoning over the whole portfolio beats classifying tasks one by one.** An earlier version of the Follow-up Agent called Gemini once per task to classify it in isolation. It worked, but it couldn't do the thing that actually makes a digest useful: notice that the *same person* is behind on three things, or that one task is far more overdue than everything else. Feeding the entire pending list to a single Gemini call, and asking it to look across tasks before writing, is what unlocked that — and it also collapses N reminder messages into one digest, which is a better experience on its own.
+- **A tool call beats a flat threshold for judging staleness.** `reminder_count >= 2` looks like a clean escalation rule, but two tasks with the same count can be totally different in practice — one nudged twice in three weeks (stuck), one nudged twice in two days (still fresh). Giving the agent a real ADK tool, `get_task_events(task_id)`, and instructions on *when* to call it (only for ambiguous cases, not every task) let it use actual timestamps to tell those apart. Verified in production: two tasks with an identical `reminder_count` received different treatment after the agent pulled their real history.
+- **A subtle recipient bug only showed up once escalation went live.** The per-task version drafted messages addressed to the task's owner (e.g. "Hola Carla…"), but the bot only ever has a chat with the person who *created* the tasks — task owners never talk to it. Those messages were quietly landing with the wrong person. Reasoning over the whole portfolio and explicitly instructing the agent to always address the chat's owner (never a task's owner) fixed it — a good example of a mistake that's invisible until you check who the message is actually for, not just what it says.
+- **`gemini-3.5-flash` (and other recent Gemini models) are only served from Vertex AI's `global` location in this project** — not regional locations like `us-central1`. Infra (Cloud Functions, Firestore) stays in `us-central1`; only the model calls use `VERTEX_AI_LOCATION=global`.
+- **Firebase can be set up without an interactive `firebase login`.** That flow needs a real browser, which wasn't available in this dev environment. Firebase was instead added to the GCP project and the web app registered via direct calls to the Firebase Management API (`firebase.googleapis.com`) and Firebase Rules API (`firebaserules.googleapis.com`), authenticated with the already-logged-in `gcloud` user token (`gcloud auth print-access-token`) plus an `x-goog-user-project` header. If you have a working `firebase login`, the equivalent CLI commands are simpler (see `dashboard/README.md`).
+- **A stale ADC quota project causes a confusing `PERMISSION_DENIED`.** If Vertex AI calls fail despite correct IAM roles, check `gcloud auth application-default set-quota-project` — leftover Application Default Credentials from a different project/account on the same machine reproduce exactly this symptom.

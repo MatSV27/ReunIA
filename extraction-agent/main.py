@@ -26,6 +26,16 @@ def extraction_webhook(request):
     chat_id = message["chat"]["id"]
     message_id = message["message_id"]
 
+    already_processed = list(
+        db.collection("tasks")
+        .where("source_chat_id", "==", str(chat_id))
+        .where("source_message_id", "==", str(message_id))
+        .limit(1)
+        .stream()
+    )
+    if already_processed:
+        return ("OK", 200)
+
     if "voice" in message:
         file_path = get_file_path(message["voice"]["file_id"])
         audio_bytes = download_file(file_path)
