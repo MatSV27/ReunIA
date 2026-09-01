@@ -4,6 +4,8 @@
 
 # ReunIA
 
+Video demo: https://www.youtube.com/watch?v=okqnuGLGB-o
+
 **The friction:** meetings produce commitments ("I'll send you the report Friday," "Carla owes me the deck by next week"), but nobody writes them down, and even when someone does, nobody chases them. ReunIA fixes both halves: send it a voice note or text after a meeting and it extracts every action item on its own; from then on, a second agent silently watches your whole list of open commitments and only speaks up when something actually needs your attention — no dashboard-checking, no manual reminders, no per-task notifications required.
 
 It's two autonomous Gemini agents wired to one Telegram bot and one Firestore database, plus a small dashboard to see what they're doing:
